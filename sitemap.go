@@ -53,6 +53,7 @@ const (
                   </xs:restriction>
                 </xs:simpleType>
               </xs:element>
+              <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
@@ -87,7 +88,8 @@ const (
 	sitemapXSL = `<?xml version="1.0" encoding="UTF-8"?>
 <xsl:stylesheet version="2.0"
     xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
-    xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9">
+    xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9"
+    xmlns:xhtml="http://www.w3.org/1999/xhtml">
     <xsl:output method="html" encoding="UTF-8" indent="yes"/>
     <xsl:template match="/">
         <html>
@@ -98,6 +100,8 @@ const (
                 table { border-collapse: collapse; width: 100%; }
                 th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
                 tr:hover {background-color: #f5f5f5;}
+                .alt-langs { font-size: 0.85em; color: #666; }
+                .alt-langs a { margin-right: 6px; }
             </style>
         </head>
         <body>
@@ -106,11 +110,17 @@ const (
                 <tr>
                     <th>URL</th>
                     <th>Last Modified</th>
+                    <th>Alternates</th>
                 </tr>
                 <xsl:for-each select="//s:url | //s:sitemap">
                     <tr>
                         <td><a href="{s:loc}"><xsl:value-of select="s:loc"/></a></td>
                         <td><xsl:value-of select="s:lastmod"/></td>
+                        <td class="alt-langs">
+                            <xsl:for-each select="xhtml:link[@rel='alternate']">
+                                <a href="{@href}"><xsl:value-of select="@hreflang"/></a>
+                            </xsl:for-each>
+                        </td>
                     </tr>
                 </xsl:for-each>
             </table>
@@ -121,13 +131,20 @@ const (
 `
 )
 
+// AlternateLink represents an hreflang alternate link for internationalized sitemaps.
+type AlternateLink struct {
+	Hreflang string
+	Href     string
+}
+
 // SitemapURL represents a single URL entry in the sitemap.
 type SitemapURL struct {
-	XMLName    xml.Name `xml:"url"`
-	Loc        string   `xml:"loc"`
-	LastMod    string   `xml:"lastmod,omitempty"`
-	ChangeFreq string   `xml:"changefreq,omitempty"`
-	Priority   string   `xml:"priority,omitempty"`
+	XMLName    xml.Name        `xml:"url"`
+	Loc        string          `xml:"loc"`
+	LastMod    string          `xml:"lastmod,omitempty"`
+	ChangeFreq string          `xml:"changefreq,omitempty"`
+	Priority   string          `xml:"priority,omitempty"`
+	Alternates []AlternateLink `xml:"-"`
 }
 
 // URLSet represents a collection of SitemapURLs.
@@ -183,7 +200,7 @@ func (s *SitemapOptions) AddURL(url SitemapURL) {
 			url.LastMod = time.Now().UTC().Format("2006-01-02")
 		}
 	}
-	if !strings.HasPrefix(url.Loc, "http://") || !strings.HasPrefix(url.Loc, "https://") {
+	if !strings.HasPrefix(url.Loc, "http://") && !strings.HasPrefix(url.Loc, "https://") {
 		if strings.HasPrefix(url.Loc, "/") && strings.HasSuffix(s.BaseURL, "/") {
 			url.Loc = "https://" + s.BaseURL + url.Loc
 		} else if !strings.HasPrefix(url.Loc, "/") && !strings.HasSuffix(s.BaseURL, "/") {
@@ -217,13 +234,24 @@ func (s *SitemapOptions) Write(baseSitemapURL string) error {
 		return err
 	}
 
-	// Prepare URLs
+	// Prepare URLs - resolve Loc and Alternate hrefs
 	for i := range s.URLs {
 		fullURL, err := s.resolveURL(s.URLs[i].Loc)
 		if err != nil {
 			return err
 		}
 		s.URLs[i].Loc = fullURL
+
+		for j := range s.URLs[i].Alternates {
+			href := s.URLs[i].Alternates[j].Href
+			if href != "" && !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
+				altURL, err := s.resolveURL(href)
+				if err != nil {
+					return err
+				}
+				s.URLs[i].Alternates[j].Href = altURL
+			}
+		}
 	}
 
 	// Decide whether to create a sitemap index or a single sitemap
@@ -275,21 +303,53 @@ func (s *SitemapOptions) writeStylesheet() error {
 	return os.WriteFile(filePath, []byte(sitemapXSL), 0644)
 }
 
+// escapeXML escapes a string for safe use in XML content/attributes.
+func escapeXML(s string) string {
+	var buf bytes.Buffer
+	xml.EscapeText(&buf, []byte(s))
+	return buf.String()
+}
+
 func (s *SitemapOptions) writeSitemapFile(filename string, urls []SitemapURL) error {
-	urlSet := URLSet{
-		Xmlns: "http://www.sitemaps.org/schemas/sitemap/0.9",
-		URLs:  urls,
+	hasAlternates := false
+	for _, u := range urls {
+		if len(u.Alternates) > 0 {
+			hasAlternates = true
+			break
+		}
 	}
 
-	data, err := xml.MarshalIndent(urlSet, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	// Add XML header and stylesheet with correct URL
-	buffer := bytes.NewBufferString(xml.Header)
+	var buffer bytes.Buffer
+	buffer.WriteString(xml.Header)
 	buffer.WriteString(fmt.Sprintf(`<?xml-stylesheet type="text/xsl" href="%s"?>`+"\n", s.Stylesheet))
-	buffer.Write(data)
+
+	if hasAlternates {
+		buffer.WriteString("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"\n")
+		buffer.WriteString("        xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\n")
+	} else {
+		buffer.WriteString("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n")
+	}
+
+	for _, u := range urls {
+		buffer.WriteString("  <url>\n")
+		buffer.WriteString(fmt.Sprintf("    <loc>%s</loc>\n", escapeXML(u.Loc)))
+		if u.LastMod != "" {
+			buffer.WriteString(fmt.Sprintf("    <lastmod>%s</lastmod>\n", escapeXML(u.LastMod)))
+		}
+		if u.ChangeFreq != "" {
+			buffer.WriteString(fmt.Sprintf("    <changefreq>%s</changefreq>\n", escapeXML(u.ChangeFreq)))
+		}
+		if u.Priority != "" {
+			buffer.WriteString(fmt.Sprintf("    <priority>%s</priority>\n", escapeXML(u.Priority)))
+		}
+		for _, alt := range u.Alternates {
+			buffer.WriteString(fmt.Sprintf("    <xhtml:link rel=\"alternate\" hreflang=\"%s\" href=\"%s\"/>\n",
+				escapeXML(alt.Hreflang), escapeXML(alt.Href)))
+		}
+		buffer.WriteString("  </url>\n")
+	}
+
+	buffer.WriteString("</urlset>\n")
 
 	filePath := path.Join(s.Dir, filename)
 	return os.WriteFile(filePath, buffer.Bytes(), 0644)
