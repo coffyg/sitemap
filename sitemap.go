@@ -53,7 +53,6 @@ const (
                   </xs:restriction>
                 </xs:simpleType>
               </xs:element>
-              <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
@@ -201,12 +200,15 @@ func (s *SitemapOptions) AddURL(url SitemapURL) {
 		}
 	}
 	if !strings.HasPrefix(url.Loc, "http://") && !strings.HasPrefix(url.Loc, "https://") {
-		if strings.HasPrefix(url.Loc, "/") && strings.HasSuffix(s.BaseURL, "/") {
-			url.Loc = "https://" + s.BaseURL + url.Loc
-		} else if !strings.HasPrefix(url.Loc, "/") && !strings.HasSuffix(s.BaseURL, "/") {
-			url.Loc = "https://" + s.BaseURL + "/" + url.Loc
+		baseURL := s.BaseURL
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			baseURL = "https://" + baseURL
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		if strings.HasPrefix(url.Loc, "/") {
+			url.Loc = baseURL + url.Loc
 		} else {
-			url.Loc = "https://" + s.BaseURL + url.Loc
+			url.Loc = baseURL + "/" + url.Loc
 		}
 	}
 	s.URLs = append(s.URLs, url)
@@ -275,7 +277,11 @@ func (s *SitemapOptions) Write(baseSitemapURL string) error {
 }
 
 func (s *SitemapOptions) resolveURL(loc string) (string, error) {
-	base, err := url.Parse(s.BaseURL)
+	baseURL := s.BaseURL
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "https://" + baseURL
+	}
+	base, err := url.Parse(baseURL)
 	if err != nil {
 		return "", err
 	}

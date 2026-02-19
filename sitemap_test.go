@@ -43,7 +43,7 @@ func TestSitemapGeneration(t *testing.T) {
 
 	err := sm.Write(baseSitemapURL)
 	if err != nil {
-		t.Fatalf("Error writing sitemaps: %v", err)
+		t.Fatalf("Error writing sitemaps: %+v", err)
 	}
 
 	// Check if sitemap index was created
