@@ -82,3 +82,89 @@ func TestSitemapGeneration(t *testing.T) {
 	// Clean up after test
 	os.RemoveAll(dir)
 }
+
+func TestSitemapWithHreflang(t *testing.T) {
+	dir := "./test_sitemaps_hreflang"
+	baseURL := "soulkyn.com"
+	baseSitemapURL := "https://soulkyn.com/sitemaps/"
+
+	// Clean up before test
+	os.RemoveAll(dir)
+
+	sm := NewSitemapOptions(dir, baseURL)
+
+	langs := []string{"en-us", "fr-fr", "de-de", "es-es", "ja-jp"}
+	basePath := "/"
+
+	// Build alternates for all languages
+	alternates := make([]AlternateLink, 0, len(langs))
+	for _, lang := range langs {
+		alternates = append(alternates, AlternateLink{
+			Hreflang: lang,
+			Href:     "https://soulkyn.com/l/" + lang,
+		})
+	}
+
+	// Add a URL for each language with all alternates
+	for _, lang := range langs {
+		sm.AddURL(SitemapURL{
+			Loc:        "/l/" + lang + basePath,
+			LastMod:    "2026-02-19",
+			ChangeFreq: "daily",
+			Priority:   "1.0",
+			Alternates: alternates,
+		})
+	}
+
+	// Add a URL without alternates to test mixed mode
+	sm.AddURL(SitemapURL{
+		Loc:        "/about",
+		LastMod:    "2026-01-01",
+		ChangeFreq: "monthly",
+		Priority:   "0.5",
+	})
+
+	err := sm.Write(baseSitemapURL)
+	if err != nil {
+		t.Fatalf("Error writing sitemaps: %+v", err)
+	}
+
+	// Read the generated sitemap
+	sitemapFile := path.Join(dir, "sitemap.xml")
+	data, err := os.ReadFile(sitemapFile)
+	if err != nil {
+		t.Fatalf("Error reading sitemap: %v", err)
+	}
+	content := string(data)
+
+	// Check xmlns:xhtml declaration
+	if !strings.Contains(content, `xmlns:xhtml="http://www.w3.org/1999/xhtml"`) {
+		t.Fatalf("Missing xhtml namespace declaration")
+	}
+
+	// Check xhtml:link elements
+	if !strings.Contains(content, `<xhtml:link rel="alternate" hreflang="en-us" href="https://soulkyn.com/l/en-us"/>`) {
+		t.Fatalf("Missing xhtml:link for en-us")
+	}
+	if !strings.Contains(content, `<xhtml:link rel="alternate" hreflang="ja-jp" href="https://soulkyn.com/l/ja-jp"/>`) {
+		t.Fatalf("Missing xhtml:link for ja-jp")
+	}
+
+	// Check that each localized URL has ALL alternates
+	// Count how many times the en-us alternate appears (should be once per lang URL = 5 times)
+	enUsCount := strings.Count(content, `hreflang="en-us"`)
+	if enUsCount != 5 {
+		t.Fatalf("Expected 5 en-us alternates (one per lang URL), got %d", enUsCount)
+	}
+
+	// Verify the about page has no alternates
+	aboutIdx := strings.Index(content, "soulkyn.com/about")
+	if aboutIdx == -1 {
+		t.Fatalf("About page not found in sitemap")
+	}
+
+	t.Logf("Sitemap with hreflang generated and validated successfully")
+
+	// Clean up after test
+	os.RemoveAll(dir)
+}

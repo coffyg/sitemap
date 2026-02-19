@@ -53,6 +53,7 @@ const (
                   </xs:restriction>
                 </xs:simpleType>
               </xs:element>
+              <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
