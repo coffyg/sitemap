@@ -9,81 +9,12 @@ import (
 	"path"
 	"strings"
 	"time"
-
-	"github.com/lestrrat-go/libxml2"
-	"github.com/lestrrat-go/libxml2/xsd"
 )
 
 const (
 	sitemapExt = ".xml"
 	// Reduced max URLs by 1/3 for safety
 	maxURLsPerSitemap = 33333
-	// Sitemap XSD schema for validation
-	sitemapXSD = `<?xml version="1.0" encoding="UTF-8"?>
-<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
-           xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-           targetNamespace="http://www.sitemaps.org/schemas/sitemap/0.9"
-           elementFormDefault="qualified">
-  <xs:element name="urlset">
-    <xs:complexType>
-      <xs:sequence>
-        <xs:element name="url" maxOccurs="unbounded">
-          <xs:complexType>
-            <xs:sequence>
-              <xs:element name="loc" type="xs:anyURI" />
-              <xs:element name="lastmod" type="xs:date" minOccurs="0" />
-              <xs:element name="changefreq" minOccurs="0">
-                <xs:simpleType>
-                  <xs:restriction base="xs:string">
-                    <xs:enumeration value="always" />
-                    <xs:enumeration value="hourly" />
-                    <xs:enumeration value="daily" />
-                    <xs:enumeration value="weekly" />
-                    <xs:enumeration value="monthly" />
-                    <xs:enumeration value="yearly" />
-                    <xs:enumeration value="never" />
-                  </xs:restriction>
-                </xs:simpleType>
-              </xs:element>
-              <xs:element name="priority" minOccurs="0">
-                <xs:simpleType>
-                  <xs:restriction base="xs:decimal">
-                    <xs:minInclusive value="0.0" />
-                    <xs:maxInclusive value="1.0" />
-                  </xs:restriction>
-                </xs:simpleType>
-              </xs:element>
-              <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
-            </xs:sequence>
-          </xs:complexType>
-        </xs:element>
-      </xs:sequence>
-    </xs:complexType>
-  </xs:element>
-</xs:schema>
-`
-	// Sitemap Index XSD schema for validation
-	sitemapIndexXSD = `<?xml version="1.0" encoding="UTF-8"?>
-<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
-           xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-           targetNamespace="http://www.sitemaps.org/schemas/sitemap/0.9"
-           elementFormDefault="qualified">
-  <xs:element name="sitemapindex">
-    <xs:complexType>
-      <xs:sequence>
-        <xs:element name="sitemap" maxOccurs="unbounded">
-          <xs:complexType>
-            <xs:sequence>
-              <xs:element name="loc" type="xs:anyURI" />
-              <xs:element name="lastmod" type="xs:date" minOccurs="0" />
-            </xs:sequence>
-          </xs:complexType>
-        </xs:element>
-      </xs:sequence>
-    </xs:complexType>
-  </xs:element>
-</xs:schema>
-`
 	// Stylesheet content
 	sitemapXSL = `<?xml version="1.0" encoding="UTF-8"?>
 <xsl:stylesheet version="2.0"
@@ -404,36 +335,47 @@ func (s *SitemapOptions) writeSitemapIndex(baseSitemapURL string) error {
 	return os.WriteFile(filePath, buffer.Bytes(), 0644)
 }
 
-// validateXMLFile validates the given XML file against the sitemap XSD.
-// If isIndex is true, validates against the sitemap index XSD.
+// validateXMLFile checks the given XML file we just wrote: it must be
+// well-formed and unmarshal back into the exact struct it was generated
+// from (URLSet or SitemapIndex), with the right root element and a non-empty
+// <loc> on every entry. Pure encoding/xml — no libxml2/cgo (the lestrrat-go
+// binding is abandoned and stopped compiling against libxml2 ≥ 2.14).
 func (s *SitemapOptions) validateXMLFile(filePath string, isIndex bool) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read XML file for validation: %v", err)
 	}
 
-	schemaData := sitemapXSD
 	if isIndex {
-		schemaData = sitemapIndexXSD
+		var idx SitemapIndex
+		if err := xml.Unmarshal(data, &idx); err != nil {
+			return fmt.Errorf("failed to parse sitemap index XML: %v", err)
+		}
+		if idx.XMLName.Local != "sitemapindex" {
+			return fmt.Errorf("XML validation failed: root element is <%s>, expected <sitemapindex>", idx.XMLName.Local)
+		}
+		if len(idx.Sitemaps) == 0 {
+			return fmt.Errorf("XML validation failed: sitemap index has no <sitemap> entries")
+		}
+		for i, sm := range idx.Sitemaps {
+			if strings.TrimSpace(sm.Loc) == "" {
+				return fmt.Errorf("XML validation failed: sitemap index entry %d has an empty <loc>", i)
+			}
+		}
+		return nil
 	}
 
-	// Parse the schema
-	schema, err := xsd.Parse([]byte(schemaData))
-	if err != nil {
-		return fmt.Errorf("failed to parse schema: %v", err)
+	var set URLSet
+	if err := xml.Unmarshal(data, &set); err != nil {
+		return fmt.Errorf("failed to parse sitemap XML: %v", err)
 	}
-	defer schema.Free()
-
-	// Parse the XML document
-	doc, err := libxml2.Parse(data)
-	if err != nil {
-		return fmt.Errorf("failed to parse XML: %v", err)
+	if set.XMLName.Local != "urlset" {
+		return fmt.Errorf("XML validation failed: root element is <%s>, expected <urlset>", set.XMLName.Local)
 	}
-	defer doc.Free()
-
-	// Validate the XML against the schema
-	if err := schema.Validate(doc); err != nil {
-		return fmt.Errorf("XML validation against schema failed: %v", err)
+	for i, u := range set.URLs {
+		if strings.TrimSpace(u.Loc) == "" {
+			return fmt.Errorf("XML validation failed: url entry %d has an empty <loc>", i)
+		}
 	}
 	return nil
 }
